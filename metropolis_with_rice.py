@@ -11,13 +11,13 @@ import matplotlib.pyplot as plt
 
 def parameters():
     N = 12
-    L = 4
+    L = 3
     gmin = 1.0
     gmax = 2.0
     pattern = "uniform"
     k = [1.0,1.0]
     
-    energy_exp = 2.0 # 2, 1, 0.5
+    energy_exp = 1.0 # 2, 1, 0.5
     DtN_calc = "transmat" # "trans", "schur"
     #rectangular = True
     #cross_resistors = False
@@ -31,9 +31,9 @@ def parameters():
     linewise_sweep = True
     
     b_start = 1.0
-    b_stop = 10000.0
+    b_stop = 100000.0
     try_stop = 100
-    swp_stop = 5
+    swp_stop = 20
     
     histogram_overlap = 0.9
     scale = abs(norm.ppf(histogram_overlap/2))
@@ -84,7 +84,7 @@ def make_image2(g_est, gmin, gmax, g, N,L, start, T, im_number, name):
     g_imshow1.append( [gmin]*N)
     g_imshow1.append( [gmax]*N)
     fig.add_subplot(131)
-    plt.imshow(g_imshow1, interpolation="nearest", cmap="hot")
+    plt.imshow(g_imshow1, interpolation="nearest", cmap="bone")
     
     g_imshow2 = []
     for l in range(L):
@@ -92,7 +92,7 @@ def make_image2(g_est, gmin, gmax, g, N,L, start, T, im_number, name):
     g_imshow2.append( [gmin]*N)
     g_imshow2.append( [gmax]*N)
     fig.add_subplot(132)
-    plt.imshow(g_imshow2, interpolation="nearest", cmap="hot")
+    plt.imshow(g_imshow2, interpolation="nearest", cmap="bone")
     
     g_diff = [ gmin + abs(g_1 - g_2) for g_1,g_2 in zip(g,g_est)]
     g_imshow3 = []
@@ -264,7 +264,7 @@ def seperators(linewise, nodal):
         if nodal:
             return [N*i for i in range(L+1)]
         else:
-            return ([(N-1)*i for i in range(L+1) ] + 
+            return ([(N-1)*i for i in range(L) ] + 
                     [L*(N-1) + N*i for i in range(L) ] )
     else:
         if nodal:
@@ -273,16 +273,20 @@ def seperators(linewise, nodal):
             return [0 , 2*N*L - N - L]
 
 
-def p_metro(E0, E1, b, q):
-    return ( np.random.uniform() < np.exp( (b*E0)**q - (b*E1)**q ) )
+def p_metro(E0, E1, b, q, rand):
+    return ( rand < np.exp( (b*E0)**q - (b*E1)**q ) )
 
 
 def metropolis(N,L,A,g,g0,gl,gh,nodal,b_start,b_stop,try_stop,swp_stop,scale,demand,linewise_sweep, energy_exp, DtN_calc, narrowing_selection):
     start = time.clock()
+    num = 1
+    ber = 48271
+    gen = 2**31 - 1
+    for i in range(1200):
+        num = num*ber%gen
+    rand = float(num)/gen
     
     eval_time = 0.0
-    
-    E = lambda x: energy(N,L,A,x,DtN_calc,nodal)
     seps = seperators(linewise_sweep, nodal)
     
     if nodal:
@@ -295,8 +299,8 @@ def metropolis(N,L,A,g,g0,gl,gh,nodal,b_start,b_stop,try_stop,swp_stop,scale,dem
     img_count = 0
     
     g1 = copy.copy(g0)
-    E0 = E(g0)
-    E1 = E(g1)
+    E0 = energy(N,L,A,g0,DtN_calc,nodal)
+    E1 = energy(N,L,A,g1,DtN_calc,nodal)
     
     E_avg_list = []
     sigma_list = []
@@ -313,11 +317,14 @@ def metropolis(N,L,A,g,g0,gl,gh,nodal,b_start,b_stop,try_stop,swp_stop,scale,dem
     tries_list = []
     fails = 0
     tries = 0
+    fail_streak_list = []
+    b_streak_list = []
+    fail_streak = 0
     
     
     g_vals = []
     g_sigs = []
-    for i in range(N*L ):
+    for i in range(M):
         g_vals.append( list( np.random.uniform( gmin, gmax, 100 ) )  )
         g_sigs.append( np.std( g_vals[-1] ) )
     
@@ -326,25 +333,34 @@ def metropolis(N,L,A,g,g0,gl,gh,nodal,b_start,b_stop,try_stop,swp_stop,scale,dem
         swp_count = 0
         fails = 0
         tries = 0
+        fail_streak = 0
         E_list = []
         dglist = []
         dginflist = []
         while swp_count < swp_stop*M:
             for l in range(len(seps)-1):
                 swp_count_line = 0
-                while swp_count_line<=N:
+                while swp_count_line<=seps[l+1]-seps[l]:
                     nodes = range(seps[l], seps[l+1])
-                    np.random.shuffle(nodes)
                     for n in nodes:
+                        num = num*ber%gen
+                        rand = float(num)/gen
                         if narrowing_selection:
-                            g1[n] = np.random.uniform(max([gl,g1[n]-6*g_sigs[n]]),
-                                                        min([gh,g1[n]+6*g_sigs[n]]))
+                            gn = ( (1-rand)*max([gl,g1[n]-6*g_sigs[n]])
+                                    + rand*min([gh,g1[n]+6*g_sigs[n]]  ) )
+                            g1[n] = gn
                         else:
-                            g1[n] = np.random.uniform(gl,gh)
+                            gn = ( (1-rand)*gl + rand*gh )
+                            g1[n] = gn
+                            
                         eval_time = eval_time - time.clock()
-                        E1 = E(g1)
+                        E1 = energy(N,L,A,g1,DtN_calc,nodal)
                         eval_time = eval_time + time.clock()
-                        success = p_metro(E0,E1,b,energy_exp)
+                        
+                        num = num*ber%gen
+                        rand = float(num)/gen
+                        success = p_metro(E0,E1,b,energy_exp,rand)
+                        
                         if success:
                             g0[n] = g1[n]
                             E0 = copy.copy(E1)
@@ -356,12 +372,16 @@ def metropolis(N,L,A,g,g0,gl,gh,nodal,b_start,b_stop,try_stop,swp_stop,scale,dem
                             g_vals[n].append(g0[n])
                             g_vals[n].pop(0)
                             tries += 1
+                            fail_streak_list.append(fail_streak)
+                            b_streak_list.append(b)
+                            fail_streak = 0
                         else:
                             g1[n] = g0[n]
                             try_count += 1
                             swp_count += 1
                             fails += 1
                             tries += 1
+                            fail_streak += 1
         fails_list.append(fails)
         tries_list.append(tries)
         E_avg = np.average(E_list)
@@ -383,7 +403,10 @@ def metropolis(N,L,A,g,g0,gl,gh,nodal,b_start,b_stop,try_stop,swp_stop,scale,dem
         if b_print <= b:
             b_print = b_print*np.cbrt(10.0)
             print "b = ",b
-            make_image2(g0, gmin, gmax, g, N, L, start, b, img_count, "hei")
+            if nodal:
+                make_image2(g0, gmin, gmax, g, N, L, start, b, img_count, "hei")
+            else:
+                make_image(g0, gmin, gmax, g, N, L, start, b, img_count, "hei")
             plt.show()
             img_count += 1
     
@@ -417,7 +440,10 @@ def metropolis(N,L,A,g,g0,gl,gh,nodal,b_start,b_stop,try_stop,swp_stop,scale,dem
     plt.show()
     print np.polyfit( [np.log(abs(np.log(t))) for t in b_list][len(b_list)/2:],
                        [np.log(dif) for dif in dif_g_list][len(b_list)/2:], 1)
-    print 0
+    plt.plot( range(len(fail_streak_list)) , fail_streak_list )
+    plt.show()
+    plt.plot( [ np.log(b_s) for b_s in b_streak_list], fail_streak_list, ".")
+    plt.show()
     
     
 if __name__ == "__main__":
@@ -425,5 +451,10 @@ if __name__ == "__main__":
     g = g_construct(gmin, gmax, nodal, pattern, k)
     gh,gv = g_split(g, nodal)
     A = transmat(gh, gv, N, L)
-    g0 = [1.5]*(N*L)
+    g0 = []
+    if nodal:
+        g0 = [np.random.uniform(gmin,gmax)]*(N*L)
+    else:
+        for i in range(2*N*L - N - L):
+            g0.append(np.random.uniform(gmin,gmax))
     metropolis(N, L, A, g, g0, gmin, gmax, nodal, b_start, b_stop, try_stop, swp_stop, scale,demand,linewise_sweep, energy_exp, DtN_calc, narrowing_selection)

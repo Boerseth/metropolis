@@ -14,7 +14,7 @@ def parameters():
     L = 3
     gmin = 1.0
     gmax = 2.0
-    pattern = "uniform"
+    pattern = "wave"
     k = [1.0,1.0]
     
     energy_exp = 1.0 # 2, 1, 0.5
@@ -130,7 +130,6 @@ def g_construct(high, low, nodal, pattern, k):
             
         for l in range(L)[::-1]:
             g = g + [ sigma(n,l) for n in range(N) ]
-            print g
     else:
         if pattern=="wave":
             sigma = lambda n,l,h: mid + amp*np.sin( (n+h)*k[0] + (l+0.5-h)*k[1] )
@@ -148,6 +147,7 @@ def g_construct(high, low, nodal, pattern, k):
 
 
 def transmat(G_h, G_v, N, L):
+    import numpy as np
     A = np.zeros((N,N))
     U = np.zeros((N,N))
     
@@ -158,7 +158,7 @@ def transmat(G_h, G_v, N, L):
     
     for l in range(1,L):
         U = np.diagflat(G_v[L-1-l])
-        A = A.dot(linalg.solve( U + A, U, sym_pos=True , overwrite_b = True))
+        A = A.dot(np.linalg.solve( U + A, U))
         
         A += - np.diagflat( G_h[L-1-l], 1 )
         A += - np.diagflat( G_h[L-1-l], -1 )
@@ -168,6 +168,7 @@ def transmat(G_h, G_v, N, L):
     
     
 def trans(G_h, G_v, N, L):
+    import numpy as np
     A_tra = np.zeros((N,N))
     g = 0.0
     """ Horizontal resistors, 0th layer """
@@ -196,6 +197,8 @@ def trans(G_h, G_v, N, L):
     return A_tra
     
 def schur(G_h, G_v, N, L):
+    import numpy as np
+    from scipy import linalg
     A = np.zeros((N,N))
     B = np.zeros((N,N))
     
@@ -232,7 +235,7 @@ def schur(G_h, G_v, N, L):
         A[i+1][i] += - G_h[0][i]
     return A
    
-def g_split(G, nodal):
+def g_split(G, nodal,N,L):
     G_H = []
     G_V = []
     if nodal:
@@ -248,7 +251,8 @@ def g_split(G, nodal):
     return G_H, G_V
 
 def energy(N,L,A,g,DtN,nodal):
-    gh, gv = g_split(g, nodal)
+    import numpy as np
+    gh, gv = g_split(g, nodal,N,L)
     
     if DtN == "transmat":
         A_try = transmat(gh,gv,N,L)
@@ -279,6 +283,10 @@ def p_metro(E0, E1, b, q, rand):
 
 def metropolis(N,L,A,g,g0,gl,gh,nodal,b_start,b_stop,try_stop,swp_stop,scale,demand,linewise_sweep, energy_exp, DtN_calc, narrowing_selection):
     start = time.clock()
+    ppservers = ()
+    ncpus = 3
+    jobs_server = pp.Server(ncpus, ppservers)
+    
     num = 1
     ber = 48271
     gen = 2**31 - 1
@@ -342,46 +350,60 @@ def metropolis(N,L,A,g,g0,gl,gh,nodal,b_start,b_stop,try_stop,swp_stop,scale,dem
                 swp_count_line = 0
                 while swp_count_line<=seps[l+1]-seps[l]:
                     nodes = range(seps[l], seps[l+1])
-                    for n in nodes:
-                        num = num*ber%gen
-                        rand = float(num)/gen
-                        if narrowing_selection:
-                            gn = ( (1-rand)*max([gl,g1[n]-6*g_sigs[n]])
-                                    + rand*min([gh,g1[n]+6*g_sigs[n]]  ) )
-                            g1[n] = gn
-                        else:
-                            gn = ( (1-rand)*gl + rand*gh )
-                            g1[n] = gn
-                            
+                    g_list = []
+                    for i in range(len(nodes)/ncpus):
+                        for n in nodes[i:min([i+ncpus,len(nodes)-1])]:
+                            num = num*ber%gen
+                            rand = float(num)/gen
+                            if narrowing_selection:
+                                gn = ( (1-rand)*max([gl,g1[n]-6*g_sigs[n]])
+                                        + rand*min([gh,g1[n]+6*g_sigs[n]]  ) )
+                                g1[n] = gn
+                                g_list.append([g1,n])
+                                g1[n] = g0[n]
+                            else:
+                                gn = ( (1-rand)*gl + rand*gh )
+                                g1[n] = gn
+                                g_list.append([g1,n])
+                                g1[n] = g0[n]
                         eval_time = eval_time - time.clock()
-                        E1 = energy(N,L,A,g1,DtN_calc,nodal)
+                        jobs = [
+                                [g_i,n, jobs_server.submit(energy,
+                                                        (N,L,A,g_i,DtN_calc,nodal,),
+                                                        (g_split,transmat,trans,schur,),
+                                                        )]
+                                for g_i, n in g_list]
+                        not_swapped = True
+                        for g_i,n, job in jobs:
+                            E1 = job()
+                            
+                            num = num*ber%gen
+                            rand = float(num)/gen
+                            success = p_metro(E0,E1,b,energy_exp,rand)
+                            
+                            if success and not_swapped:
+                                g0[n] = g_i[n]
+                                g1[n] = g_i[n]
+                                E0 = copy.copy(E1)
+                                swp_count += 1
+                                swp_count_line += 1
+                                E_list.append(E0**energy_exp)
+                                dglist.append(np.linalg.norm(np.array(g) - np.array(g0) ))
+                                dginflist.append(max(abs(np.array(g) - np.array(g0))))
+                                g_vals[n].append(g0[n])
+                                g_vals[n].pop(0)
+                                tries += 1
+                                fail_streak_list.append(fail_streak)
+                                b_streak_list.append(b)
+                                fail_streak = 0
+                            else:
+                                try_count += 1
+                                swp_count += 1
+                                fails += 1
+                                tries += 1
+                                fail_streak += 1
                         eval_time = eval_time + time.clock()
-                        
-                        num = num*ber%gen
-                        rand = float(num)/gen
-                        success = p_metro(E0,E1,b,energy_exp,rand)
-                        
-                        if success:
-                            g0[n] = g1[n]
-                            E0 = copy.copy(E1)
-                            swp_count += 1
-                            swp_count_line += 1
-                            E_list.append(E0**energy_exp)
-                            dglist.append(np.linalg.norm(np.array(g) - np.array(g0) ))
-                            dginflist.append(max(abs(np.array(g) - np.array(g0))))
-                            g_vals[n].append(g0[n])
-                            g_vals[n].pop(0)
-                            tries += 1
-                            fail_streak_list.append(fail_streak)
-                            b_streak_list.append(b)
-                            fail_streak = 0
-                        else:
-                            g1[n] = g0[n]
-                            try_count += 1
-                            swp_count += 1
-                            fails += 1
-                            tries += 1
-                            fail_streak += 1
+        print "H"
         fails_list.append(fails)
         tries_list.append(tries)
         E_avg = np.average(E_list)
@@ -449,7 +471,7 @@ def metropolis(N,L,A,g,g0,gl,gh,nodal,b_start,b_stop,try_stop,swp_stop,scale,dem
 if __name__ == "__main__":
     N, L, gmin, gmax, nodal, pattern, k,b_start, b_stop, try_stop, swp_stop, scale,demand,linewise_sweep, energy_exp, DtN_calc, narrowing_selection = parameters()
     g = g_construct(gmin, gmax, nodal, pattern, k)
-    gh,gv = g_split(g, nodal)
+    gh,gv = g_split(g, nodal,N,L)
     A = transmat(gh, gv, N, L)
     g0 = []
     if nodal:

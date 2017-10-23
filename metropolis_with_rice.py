@@ -3,7 +3,6 @@
 import copy
 import time
 
-import pp
 import numpy as np
 from scipy import linalg
 from scipy.stats import norm
@@ -15,7 +14,7 @@ import matplotlib.pyplot as plt
 #==============================================================================
 def parameters():
     N = 12
-    L = 4
+    L = 3
     gmin = 1.0
     gmax = 2.0
     pattern = "wave"
@@ -57,14 +56,14 @@ def make_image(g_est, gmin, gmax, g, N,L, start, T, im_number, name, nodal):
     g_diff = [ gmin + abs(g_1 - g_2) for g_1,g_2 in zip(g,g_est)]
     imshow_list = [[],[],[]]
     g_list = [g, g_est, g_diff]
-    for l in range(L):
-        for i in range(3):
+    for l in xrange(L):
+        for i in xrange(3):
             if nodal:
                 imshow_list[i].append(g_list[i][l*N:(l+1)*N])
             elif l != L-1:
-                imshow_list[i].append(g_list[i][l*(N-1) : l*(N-1) + N-1] +[gmin] )
-                imshow_list[i].append(g_list[i][L*(N-1) + l*N : L*(N-1) + l*N + N] )
-    for i in range(3):
+                imshow_list[i].append(g_list[i][l*(N-1):l*(N-1) + N-1] +[gmin])
+                imshow_list[i].append(g_list[i][L*(N-1) +l*N:L*(N-1) +(l+1)*N])
+    for i in xrange(3):
         if nodal:
             imshow_list[i].append(   [max(gmax*(i%2),gmin*((i+1)%2))
                                      for i in range(N)]    )
@@ -84,8 +83,8 @@ def make_image(g_est, gmin, gmax, g, N,L, start, T, im_number, name, nodal):
     plt.imshow(imshow_list[2], interpolation="nearest",cmap="hot")
     
     #if save_file:
-    #plt.savefig(name+"2-"+str(im_number)+".png", bbox_inches="tight", pad_inches=0.0,
-    #    frameon=False)
+    #plt.savefig(name+"2-"+str(im_number)+".png", bbox_inches="tight",
+    #            pad_inches=0.0, frameon=False)
 
 
 #==============================================================================
@@ -131,10 +130,10 @@ def g_construct(high, low, nodal, pattern, k):
         elif pattern=="half":
             sigma = lambda n,l: low + max([0, N/2 - 0.5-n])*2*amp/(N/2 - 0.5-n)
             
-        for l in range(L)[::-1]:
-            g = g + [ sigma(n,l,0.5) for n in range(N-1) ] 
-        for l in range(L-1)[::-1]:
-            g = g + [ sigma(n,l,0.0) for n in range(N)   ]
+        for l in xrange(L)[::-1]:
+            g = g + [ sigma(n,l,0.5) for n in xrange(N-1) ] 
+        for l in xrange(L-1)[::-1]:
+            g = g + [ sigma(n,l,0.0) for n in xrange(N)   ]
     
     return g 
 
@@ -158,49 +157,57 @@ def g_construct(high, low, nodal, pattern, k):
 #
 # schur---| Computes  A  by repeated use of the Schur-complement identity
 #         | for DtN-maps on resistor grids.
+#
+# Fastest:  transmat < schur  << trans
 #==============================================================================
 def transmat(G_h, G_v, N, L):
-    import numpy as np
     A = np.zeros((N,N))
     U = np.zeros((N,N))
+    range_N_1 = xrange(N-1)
+    for i in range_N_1:
+        A[i][i] += ( G_h[L-1] )[i]
+        A[i+1][i+1] += (  G_h[L-1] )[i]
+        A[i][i+1] += - G_h[L-1][i]
+        A[i+1][i] += - G_h[L-1][i]
     
-    A += - np.diagflat( G_h[L-1], 1 )
-    A += - np.diagflat( G_h[L-1], -1 )
-    A += np.diagflat( G_h[L-1] + [0.0] )
-    A += np.diagflat( [0.0] + G_h[L-1] )
-    
-    for l in range(1,L):
-        U = np.diagflat(G_v[L-1-l])
-        A = A.dot(np.linalg.solve( U + A, U))
+    for l in xrange(1,L):
+        for i in range_N_1:
+            U[i][i] = G_v[L-1-l][i]
+        U[-1][-1] = G_v[L-1-l][-1]
+        A = A.dot(linalg.solve( U + A, U, sym_pos=True, overwrite_b=False))
         
-        A += - np.diagflat( G_h[L-1-l], 1 )
-        A += - np.diagflat( G_h[L-1-l], -1 )
-        A += np.diagflat( G_h[L-1-l] + [0.0] )
-        A += np.diagflat( [0.0] + G_h[L-1-l] )
+        #A += - np.diagflat( G_h[L-1-l], 1 )
+        #A += - np.diagflat( G_h[L-1-l], -1 )
+        #A += np.diagflat( G_h[L-1-l] + [0.0] )
+        #A += np.diagflat( [0.0] + G_h[L-1-l] )
+        for i in range_N_1:
+            A[i][i] += ( G_h[L-1-l] )[i]
+            A[i+1][i+1] += (  G_h[L-1-l] )[i]
+            A[i][i+1] += - G_h[L-1-l][i]
+            A[i+1][i] += - G_h[L-1-l][i]
     return A
     
 def trans(G_h, G_v, N, L):
-    import numpy as np
     A_tra = np.zeros((N,N))
     g = 0.0
     """ Horizontal resistors, 0th layer """
-    for i in range(N-1):
+    for i in xrange(N-1):
         g = G_h[L-1][i]
         A_tra[i][i+1] += -g
         A_tra[i+1][i] += -g
         A_tra[i][i] += g
         A_tra[i+1][i+1] += g
     
-    for l in range(1, L):
+    for l in xrange(1, L):
         """ Vertical resistors, lth layer """
-        for a in range(N):
+        for a in xrange(N):
             g = G_v[L-1-l][a]
             A = copy.copy(A_tra)
-            for i in range(N):
-                for j in range(N):
+            for i in xrange(N):
+                for j in xrange(N):
                     A_tra[i][j] = A[i][j] - A[i][a]*A[a][j]/(g + A[a][a])
         """ Horizontal resistors, lth layer """
-        for a in range(N-1):
+        for a in xrange(N-1):
             g = G_h[L-1-l][a]
             A_tra[a][a+1] += -g
             A_tra[a+1][a] += -g
@@ -209,40 +216,38 @@ def trans(G_h, G_v, N, L):
     return A_tra
     
 def schur(G_h, G_v, N, L):
-    import numpy as np
-    from scipy import linalg
     A = np.zeros((N,N))
     B = np.zeros((N,N))
     
-    for i in range(N):
+    for i in xrange(N):
         A[i][i] += G_v[L-2][i]
         A[i][i] += ( G_h[L-1] + [0.0] )[i]
         A[i][i] += ( [0.0] + G_h[L-1] )[i]
-    for i in range(N-1):
+    for i in xrange(N-1):
         A[i][i+1] += - G_h[L-1][i]
         A[i+1][i] += - G_h[L-1][i]
     
     
-    for l in range(1, L-1):
+    for l in xrange(1, L-1):
         B = np.diagflat( G_v[L-1-l] )
         A = - linalg.solve(A, B, sym_pos = True)
         A = B.dot(A)
-        for i in range(N):
+        for i in xrange(N):
             A[i][i] += G_v[L-1-l][i] + G_v[L-2-l][i]
             A[i][i] += ( G_h[L-1-l] + [0.0] )[i]
             A[i][i] += ( [0.0] + G_h[L-1-l] )[i]
-        for i in range(N-1):
+        for i in xrange(N-1):
             A[i][i+1] += - G_h[L-1-l][i]
             A[i+1][i] += - G_h[L-1-l][i]
     
     B = np.diagflat( G_v[0] )
     A = - linalg.solve(A, B, sym_pos = True, overwrite_b = False)
     A = B.dot(A)
-    for i in range(N):
+    for i in xrange(N):
         A[i][i] += G_v[0][i]
         A[i][i] += ( G_h[0] + [0.0] )[i]
         A[i][i] += ( [0.0] + G_h[0] )[i]
-    for i in range(N-1):
+    for i in xrange(N-1):
         A[i][i+1] += - G_h[0][i]
         A[i+1][i] += - G_h[0][i]
     return A
@@ -258,15 +263,14 @@ def g_split(G, nodal,N,L):
     G_H = []
     G_V = []
     if nodal:
-        for l in range(L-1):  # R1 + R2  =  g1*g2 / ( g1 + g2 )
-            G_H.append( [ g_series(G[N*l+n],G[N*l+n+1]) for n in range(N-1)] )
-            G_V.append( [ g_series(G[N*l+n],G[N*(l+1)+n]) for n in range(N)] )
-        G_H.append( [ g_series(G[N*L-N+n],G[N*L-N+n+1]) for n in range(N-1)] )
+        # R1 + R2  =  g1*g2 / ( g1 + g2 )
+        G_H = [ [ g_series(G[N*l+n],G[N*l+n+1]) for n in xrange(N-1)]
+                                                for l in xrange(L)]
+        G_V = [ [ g_series(G[N*l+n],G[N*(l+1)+n]) for n in xrange(N)]
+                                                  for l in xrange(L-1)]
     else:
-        for l in range(L):
-            G_H.append( G[l*(N-1) : l*(N-1) + N-1] )
-        for l in range(L-1):
-            G_V.append( G[L*(N-1) + l*N : L*(N-1) + l*N + N] )
+        G_H = [ G[l*(N-1) : l*(N-1) + N-1] for l in xrange(L)]
+        G_V = [ G[L*(N-1) + l*N : L*(N-1) + l*N + N] for l in xrange(L-1)]
     return G_H, G_V
     
 
@@ -278,7 +282,6 @@ def g_split(G, nodal,N,L):
 # power  energy_exp)
 #==============================================================================
 def energy(N,L,A,g,DtN,nodal):
-    import numpy as np
     gh, gv = g_split(g, nodal,N,L)
     
     if DtN == "transmat":
@@ -301,10 +304,10 @@ def energy(N,L,A,g,DtN,nodal):
 def seperators(linewise, nodal):
     if linewise:
         if nodal:
-            return [N*i for i in range(L+1)]
+            return [N*i for i in xrange(L+1)]
         else:
-            return ([(N-1)*i for i in range(L) ] + 
-                    [L*(N-1) + N*i for i in range(L) ] )
+            return ([(N-1)*i for i in xrange(L) ] + 
+                    [L*(N-1) + N*i for i in xrange(L) ] )
     else:
         if nodal:
             return [0, N*L]
@@ -364,6 +367,9 @@ def metropolis(N, L, A, g, g0, gl, gh, nodal, b_start, b_stop, try_stop,
     for i in range(M):
         g_vals.append( list(np.random.uniform(gmin,gmax,narrowing_history)) )
         g_sigs.append( np.std( g_vals[-1] ) )
+        
+    nodes = [xrange(seps[l], seps[l+1]) for l in xrange(len(seps)-1)]
+    lines = xrange(len(seps)-1)
     
     #----------------------------+
     # Everything in this box    #|
@@ -384,7 +390,9 @@ def metropolis(N, L, A, g, g0, gl, gh, nodal, b_start, b_stop, try_stop,
     fails = 0                   #|
     tries = 0                   #|
     fail_streak_list = []       #|
+    fail_streak_list_append = fail_streak_list.append
     b_streak_list = []          #|
+    b_streak_list_append = b_streak_list.append
     fail_streak = 0             #|
     #----------------------------+
     
@@ -397,16 +405,18 @@ def metropolis(N, L, A, g, g0, gl, gh, nodal, b_start, b_stop, try_stop,
         tries = 0               #|
         fail_streak = 0         #|
         E_list = []             #|
+        E_list_append = E_list.append
         dglist = []             #|
+        dglist_append = dglist.append
         dginflist = []          #|
+        dginflist_append = dginflist.append
         #------------------------+
         
         while swp_count < swp_stop*M:
-            for l in range(len(seps)-1):
+            for l in lines:
                 swp_count_line = 0
                 while swp_count_line<=seps[l+1]-seps[l]:
-                    nodes = range(seps[l], seps[l+1])
-                    for n in nodes:
+                    for n in nodes[l]:
                         rand, num = rng(num)
                         if narrowing_selection:
                             gn = ( (1-rand)*max([gl,g1[n]-8*g_sigs[n]])
@@ -432,23 +442,27 @@ def metropolis(N, L, A, g, g0, gl, gh, nodal, b_start, b_stop, try_stop,
                             g_vals[n].append(g0[n])
                             g_vals[n].pop(0)
                             
-                            # Data collection below
-                            E_list.append(E0**energy_exp)
-                            dglist.append(np.linalg.norm(np.array(g) - np.array(g0) ))
-                            dginflist.append(max(abs(np.array(g) - np.array(g0))))
-                            tries += 1
-                            fail_streak_list.append(fail_streak)
-                            b_streak_list.append(b)
-                            fail_streak = 0
+                            # Data ------------------+
+                            E_list_append(E0**energy_exp)
+                            dglist_append(np.linalg.norm(
+                                                np.array(g) - np.array(g0) ))
+                            dginflist_append(max(abs(
+                                                np.array(g) - np.array(g0) )))
+                            tries += 1              #|
+                            fail_streak_list_append(fail_streak)
+                            b_streak_list_append(b) #|
+                            fail_streak = 0         #|
+                            #------------------------+
                         else:
                             g1[n] = g0[n]
                             try_count += 1
                             swp_count += 1
                             
-                            # Data collection below
-                            fails += 1
-                            tries += 1
-                            fail_streak += 1
+                            # Data ------------------+
+                            fails += 1              #|
+                            tries += 1              #|
+                            fail_streak += 1        #|
+                            #------------------------+
         
         # Data ------------------+
         fails_list.append(fails)#|
@@ -476,7 +490,7 @@ def metropolis(N, L, A, g, g0, gl, gh, nodal, b_start, b_stop, try_stop,
         if b_print <= b:
             b_print = b_print*np.sqrt(10.0)
             print "b = ",b
-            make_image(g0, gmin, gmax, g, N, L, start, b, img_count, "h", nodal)
+            make_image(g0,gmin,gmax,g,N,L,start,b,img_count, "h", nodal)
             plt.show()
             img_count += 1
     
@@ -533,15 +547,15 @@ if __name__ == "__main__":
     # Prepare the goal distribution, to be approximated
     g = g_construct(gmin, gmax, nodal, pattern, k)
     gh,gv = g_split(g, nodal,N,L)
-    A = transmat(gh, gv, N, L)
+    A = trans(gh, gv, N, L)
     
     # Prepare the initial guess
     g0 = []
     if nodal:
-        for i in range(N*L):
+        for i in xrange(N*L):
             g0.append(np.random.uniform(gmin,gmax))
     else:
-        for i in range(2*N*L - N - L):
+        for i in xrange(2*N*L - N - L):
             g0.append(np.random.uniform(gmin,gmax))
     # Call the algorithm
     metropolis(N, L, A, g, g0, gmin, gmax, nodal, b_start, b_stop, try_stop,
